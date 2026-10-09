@@ -27,7 +27,14 @@ Every rule is enforced in code (`src/quant_desk/constitution.py`) and covered by
    opens; the constitution object refuses attribute changes. `Constitution.override_veto` always
    refuses, whoever calls it, and logs the attempt. The execution operator only accepts an
    allocation with an approving `RiskDecision` issued by a risk controller for that exact
-   allocation hash.
+   allocation hash, and the risk controller only approves an allocation whose source strategies
+   each carry an approving strategy decision.
+
+Provenance cannot be forged by hand either: only agents the lead put on the roster may act, an
+agent may only publish artifacts under its own name, and every check refuses an artifact that was
+never published to the desk or was edited afterwards (its content hash no longer matches). The
+audit log is read-only from outside. This is a discipline for in-process code, not a security
+boundary: Python code that reaches into private attributes can always get past it.
 
 ## The seven roles
 
@@ -36,7 +43,7 @@ Every rule is enforced in code (`src/quant_desk/constitution.py`) and covered by
 | desk lead | assigns roles, runs the desk, writes the report | `desk.py`, `report.py` |
 | market intelligence | synthetic regime-switching prices (seeded) or a local CSV | `market.py` |
 | quant researcher | proposes 8 hypotheses, runs vectorised backtests | `research.py` |
-| validator | reproduction, lookahead test, deflated Sharpe, IS/OOS, walk-forward | `validation.py` |
+| validator | reproduction, lookahead test, deflated Sharpe, IS/OOS, OOS sub-periods | `validation.py` |
 | risk controller | approves or vetoes strategies and the final allocation | `risk.py` |
 | portfolio adviser | inverse-volatility blend, volatility target, limit caps | `portfolio.py` |
 | execution operator | paper fills into `ledger.jsonl` (no broker) | `execution.py` |
@@ -74,12 +81,17 @@ the audit log as it is produced.
   - **deflated Sharpe ratio** ≥ 0.95 (Bailey & López de Prado, 2014), with the number of
     trials = the whole grid;
   - OOS Sharpe > 0;
-  - most of the 3 walk-forward OOS folds have a positive Sharpe.
+  - OOS sub-period consistency: most of 3 consecutive OOS sub-periods have a positive Sharpe.
+    This is not a full walk-forward: the grid has no fitted parameters, so nothing is re-fit.
 
   One documented deviation from the DSR paper: `V[SR]` is the null sampling variance of the Sharpe
-  estimator, `1/(T−1)`, not the empirical variance across trials. The grid has mirror-image
-  ideas (momentum vs mean reversion), and their genuinely opposite Sharpes inflate the
-  cross-trial variance so much that nothing could ever pass.
+  estimator, `1/(T−1)` (the variance of a skill-less strategy's Sharpe), not the empirical variance
+  across trials. The grid has mirror-image ideas (momentum vs mean reversion), and their genuinely
+  opposite Sharpes inflate the cross-trial variance: on seed 7 it would put the expected-maximum
+  hurdle at about 1.4 annualised Sharpe instead of about 0.6. The test still bites: with ~1,500
+  in-sample days and 8 trials, DSR ≥ 0.95 needs an in-sample Sharpe of roughly 1.3 annualised, and
+  on 20 pure random-walk markets no strategy passed the validator (0/160). Treating the 8
+  correlated trials as independent also makes the trial penalty conservative.
 - **Risk controller**: the strategy needs a PASS verdict, OOS Sharpe ≥ `min_oos_sharpe` and OOS
   max drawdown ≤ `max_oos_drawdown`. The allocation must fit `max_gross_exposure` and
   `max_asset_weight`.
@@ -91,7 +103,7 @@ the audit log as it is produced.
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
-.venv/bin/pytest                                  # 30 tests, a few seconds
+.venv/bin/pytest                                  # 35 tests, under a minute
 .venv/bin/quant-desk run --seed 7 --out output/   # writes output/report.md + output/ledger.jsonl
 .venv/bin/quant-desk demo                         # same as the line above
 .venv/bin/python -m quant_desk run --csv prices.csv --out output/csv-run/
@@ -125,13 +137,14 @@ From the same report:
 
 ```text
 ## Constitution drill
-The desk lead tried to override a risk veto. Result: blocked. `lead-1 (desk lead) tried to
-override risk decision 2203eb56bd96; risk vetoes cannot be overridden`
+
+The desk lead tried to override a risk veto. Result: blocked. `lead-1 (desk lead) tried to override risk decision f03f50177514; risk vetoes cannot be overridden`
 
 ## Honesty
-- Hypotheses tried: 8. Passed validation: 2. Survived risk: 1.
-- A surviving backtest is not evidence of future returns. The data is synthetic and was
-  generated with persistent trends, so trend strategies are expected to look good here.
+
+- Hypotheses tried: **8**. Passed validation: **2**. Survived risk: **1**.
+- The deflated Sharpe ratio already penalises for the number of trials, but every variant ever tried should count; this run only knows about its own grid.
+- A surviving backtest is **not** evidence of future returns. The data is synthetic and was generated with persistent trends, so trend strategies are expected to look good here.
 ```
 
 ## Limitations

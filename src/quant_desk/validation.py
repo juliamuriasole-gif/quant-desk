@@ -1,7 +1,7 @@
 """Validator: an independent check of a backtest, never run by the agent that produced it.
 
 Checks (all must pass): exact reproduction, lookahead (truncation) test, in-sample edge,
-deflated Sharpe ratio across all trials, out-of-sample edge and walk-forward consistency.
+deflated Sharpe ratio across all trials, out-of-sample edge and OOS sub-period consistency.
 """
 
 from __future__ import annotations
@@ -44,6 +44,8 @@ def deflated_sharpe(returns: pd.Series, n_trials: int) -> float:
     genuine opposite signs inflate the cross-trial variance until nothing can ever pass.
     """
     nd, t = NormalDist(), len(returns)
+    if t < 3:
+        return 0.0  # too short to say anything: never passes
     sr = _per_period_sharpe(returns)
     sr0 = 0.0
     if n_trials > 1:
@@ -53,6 +55,8 @@ def deflated_sharpe(returns: pd.Series, n_trials: int) -> float:
         )
     skew, kurt = float(returns.skew()), float(returns.kurt()) + 3
     var = 1 - skew * sr + (kurt - 1) / 4 * sr**2
+    if not var > 0:  # degenerate (e.g. constant returns): no evidence of skill
+        return 0.0
     return nd.cdf((sr - sr0) * math.sqrt(t - 1) / math.sqrt(var))
 
 
@@ -80,6 +84,7 @@ def validate(
 ) -> ValidationReport:
     constitution.require_role(agent, Task.VALIDATE)
     constitution.assert_independent(agent, result)
+    constitution.require_published(agent, result, hypothesis, market, *trials)
 
     split = int(len(result.returns) * (1 - oos_fraction))
     is_ret, oos_ret = result.returns.iloc[:split], result.returns.iloc[split:]
@@ -103,7 +108,7 @@ def validate(
         (oos_sr > 0, f"out-of-sample Sharpe {oos_sr:.2f} > 0"),
         (
             positive_folds * 2 > folds,
-            f"walk-forward: {positive_folds}/{folds} OOS folds positive "
+            f"OOS sub-periods: {positive_folds}/{folds} positive "
             f"({', '.join(f'{s:.2f}' for s in fold_srs)})",
         ),
     ]

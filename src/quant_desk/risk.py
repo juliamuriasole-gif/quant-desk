@@ -13,7 +13,7 @@ from quant_desk.artifacts import (
 )
 from quant_desk.constitution import Constitution
 from quant_desk.research import max_drawdown, sharpe
-from quant_desk.roles import Agent, Task
+from quant_desk.roles import Agent, Role, Task
 
 TOLERANCE = 1e-9
 
@@ -40,6 +40,9 @@ def assess_strategy(
 ) -> RiskDecision:
     constitution.require_role(agent, Task.ASSESS_RISK)
     constitution.assert_independent(agent, report)
+    constitution.require_published(agent, result, report)
+    if report.provenance.role is not Role.VALIDATOR:
+        raise constitution.violation(agent, "validation report was not issued by a validator")
     if report.subject_hash != result.content_hash:
         raise constitution.violation(agent, "validation report is for a different backtest")
     limits = constitution.limits
@@ -64,9 +67,26 @@ def assess_allocation(
 ) -> RiskDecision:
     constitution.require_role(agent, Task.ASSESS_RISK)
     constitution.assert_independent(agent, allocation)
+    constitution.require_published(agent, allocation)
     limits = constitution.limits
     largest = max((abs(w) for _, w in allocation.asset_weights), default=0.0)
+    # Every strategy the allocation is built from must carry an approving strategy decision,
+    # so an allocation assembled by hand from vetoed strategies cannot get through.
+    approvals = [constitution.published(h) for h in allocation.approvals]
+    backed = {
+        d.subject_hash
+        for d in approvals
+        if isinstance(d, RiskDecision) and d.approved and d.provenance.role is Role.RISK_CONTROLLER
+    }
+    sources = set(allocation.provenance.parents)
     checks = [
+        (
+            len(backed) == len(approvals)
+            and sources == backed
+            and (bool(sources) or allocation.gross == 0),
+            f"{len(sources)} source strateg{'y' if len(sources) == 1 else 'ies'}, "
+            f"{len(backed)} with risk approval",
+        ),
         (
             allocation.gross <= limits.max_gross_exposure + TOLERANCE,
             f"gross exposure {allocation.gross:.2%} vs max {limits.max_gross_exposure:.0%}",

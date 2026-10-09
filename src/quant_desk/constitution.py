@@ -1,9 +1,14 @@
 """The desk constitution, enforced in code.
 
-1. Give every agent a role before you give it a task (see `require_role`).
+1. Give every agent a role before you give it a task (see `enrol` and `require_role`).
 2. No agent grades its own work (see `assert_independent`).
 3. No lead overrides the risk limits: limits are frozen, vetoes are final, and
    execution only accepts allocations carrying an approving RiskDecision.
+
+Only agents on the roster may act, an agent may only publish artifacts under its own name, and
+checks only accept artifacts that were published to this desk unchanged (see `require_published`),
+so provenance cannot be forged by constructing or editing an artifact by hand. This is a
+discipline for in-process code, not a security boundary: Python code can always reach past it.
 """
 
 from __future__ import annotations
@@ -47,11 +52,18 @@ class Constitution:
 
     def __init__(self, limits: RiskLimits) -> None:
         object.__setattr__(self, "_limits", limits)
-        object.__setattr__(self, "audit", [])
+        object.__setattr__(self, "_audit", [])
+        object.__setattr__(self, "_roster", {})  # agent id -> role
+        object.__setattr__(self, "_published", {})  # content hash -> artifact
 
     @property
     def limits(self) -> RiskLimits:
         return self._limits
+
+    @property
+    def audit(self) -> tuple[AuditEntry, ...]:
+        """Read-only view of the audit log; entries can only be added through the constitution."""
+        return tuple(self._audit)
 
     def __setattr__(self, name: str, value: Any) -> None:
         raise ConstitutionViolation(f"the constitution is fixed once the desk starts ({name!r})")
@@ -60,19 +72,64 @@ class Constitution:
         self, actor: Agent, action: str, artifact: Artifact | None = None, note: str = ""
     ) -> None:
         label = f"{artifact.kind}:{artifact.content_hash[:12]}" if artifact else "-"
-        self.audit.append(
-            AuditEntry(len(self.audit) + 1, actor.agent_id, actor.role, action, label, note)
+        self._audit.append(
+            AuditEntry(len(self._audit) + 1, actor.agent_id, actor.role, action, label, note)
         )
 
+    def open_desk(self, lead: Agent) -> None:
+        """Put the desk lead on the roster and freeze the limits. Happens once, first."""
+        if self._roster:
+            raise self.violation(lead, "the desk is already open")
+        lead.require(Task.ASSIGN_ROLES)
+        self._roster[lead.agent_id] = lead.role
+        self.record(lead, "desk opened", note=f"risk limits frozen: {self.limits}")
+
+    def enrol(self, lead: Agent, agent: Agent) -> None:
+        """The desk lead gives `agent` its role. Agents not on the roster cannot act."""
+        self.require_role(lead, Task.ASSIGN_ROLES)
+        if agent.agent_id in self._roster:
+            raise self.violation(lead, f"{agent.agent_id} already has a role")
+        self._roster[agent.agent_id] = agent.role
+        self.record(lead, "assigned role", note=f"{agent.agent_id} -> {agent.role.value}")
+
     def publish(self, artifact: A, actor: Agent, note: str = "") -> A:
+        self._require_rostered(actor)
+        prov = artifact.provenance
+        if (prov.author_id, prov.role) != (actor.agent_id, actor.role):
+            raise self.violation(
+                actor,
+                f"{actor.agent_id} cannot publish {artifact.kind} authored by "
+                f"{prov.author_id} ({prov.role.value})",
+            )
+        self._published[artifact.content_hash] = artifact
         self.record(actor, "produced", artifact, note)
         return artifact
+
+    def require_published(self, actor: Agent, *artifacts: Artifact) -> None:
+        """Refuse artifacts that were never published here or were edited after publishing."""
+        for artifact in artifacts:
+            if artifact.content_hash not in self._published:
+                raise self.violation(
+                    actor,
+                    f"{artifact.kind}:{artifact.content_hash[:12]} was never published to this "
+                    "desk (forged or modified after publishing)",
+                )
+
+    def published(self, content_hash: str) -> Artifact | None:
+        return self._published.get(content_hash)
+
+    def _require_rostered(self, actor: Agent) -> None:
+        if self._roster.get(actor.agent_id) is not actor.role:
+            raise self.violation(
+                actor, f"{actor.agent_id} ({actor.role.value}) is not on the desk roster"
+            )
 
     def violation(self, actor: Agent, message: str) -> ConstitutionViolation:
         self.record(actor, "VIOLATION BLOCKED", note=message)
         return ConstitutionViolation(message)
 
     def require_role(self, actor: Agent, task: Task) -> None:
+        self._require_rostered(actor)
         try:
             actor.require(task)
         except RoleViolation as exc:
@@ -106,3 +163,4 @@ class Constitution:
             raise self.violation(actor, "risk decision is for a different allocation")
         if not decision.approved:
             raise self.violation(actor, "allocation was vetoed by the risk controller")
+        self.require_published(actor, allocation, decision)

@@ -51,10 +51,9 @@ class DeskRun:
 
 
 def assign_roles(lead: Agent, constitution: Constitution) -> tuple[Agent, ...]:
-    constitution.require_role(lead, Task.ASSIGN_ROLES)
     staff = tuple(Agent(agent_id, role) for agent_id, role in STAFF)
     for agent in staff:
-        constitution.record(lead, "assigned role", note=f"{agent.agent_id} -> {agent.role.value}")
+        constitution.enrol(lead, agent)
     return (lead, *staff)
 
 
@@ -69,7 +68,7 @@ def run_desk(
     out_dir.mkdir(parents=True, exist_ok=True)
     constitution = Constitution(limits or RiskLimits())
     lead = Agent("lead-1", Role.DESK_LEAD)
-    constitution.record(lead, "desk opened", note=f"risk limits frozen: {constitution.limits}")
+    constitution.open_desk(lead)
     staff = assign_roles(lead, constitution)
     _, intel, researcher, validator, risk, adviser, operator = staff
 

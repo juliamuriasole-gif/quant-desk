@@ -27,6 +27,7 @@ def execute_paper(
     """
     constitution.require_role(agent, Task.EXECUTE_PAPER)
     constitution.authorise_execution(agent, allocation, decision)
+    constitution.require_published(agent, market)
     last = market.prices.iloc[-1]
     fills = tuple(
         PaperFill(

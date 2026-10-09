@@ -71,8 +71,11 @@ def sharpe(returns: pd.Series) -> float:
 
 
 def max_drawdown(returns: pd.Series) -> float:
+    """Largest peak-to-trough fall of the equity curve, counting the starting capital (1.0)
+    as a peak so that losses from the very first bar are included."""
     equity = (1 + returns).cumprod()
-    return float((1 - equity / equity.cummax()).max()) if len(returns) else 0.0
+    peak = equity.cummax().clip(lower=1.0)
+    return float((1 - equity / peak).max()) if len(returns) else 0.0
 
 
 def propose_hypotheses(agent: Agent, constitution: Constitution) -> tuple[Hypothesis, ...]:

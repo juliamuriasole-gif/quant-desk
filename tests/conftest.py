@@ -14,8 +14,14 @@ def constitution() -> Constitution:
 
 
 @pytest.fixture
-def staff() -> dict[Role, Agent]:
-    return {role: Agent(f"{role.name.lower()}-1", role) for role in Role}
+def staff(constitution: Constitution) -> dict[Role, Agent]:
+    """One agent per role, all enrolled on the desk roster by the lead."""
+    agents = {role: Agent(f"{role.name.lower()}-1", role) for role in Role}
+    constitution.open_desk(agents[Role.DESK_LEAD])
+    for role, agent in agents.items():
+        if role is not Role.DESK_LEAD:
+            constitution.enrol(agents[Role.DESK_LEAD], agent)
+    return agents
 
 
 @pytest.fixture
@@ -32,9 +38,10 @@ def researched(constitution, staff, market) -> tuple[tuple[Hypothesis, ...], ...
 
 
 @pytest.fixture
-def tiny_market(staff: dict[Role, Agent]) -> MarketData:
+def tiny_market(constitution: Constitution, staff: dict[Role, Agent]) -> MarketData:
+    intel = staff[Role.MARKET_INTELLIGENCE]
     prices = pd.DataFrame(
         {"X": [100.0, 110.0, 99.0, 99.0]},
         index=pd.bdate_range("2024-01-01", periods=4, name="date"),
     )
-    return MarketData(Provenance.of(staff[Role.MARKET_INTELLIGENCE]), prices, "test")
+    return constitution.publish(MarketData(Provenance.of(intel), prices, "test"), intel)

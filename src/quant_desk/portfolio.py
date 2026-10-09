@@ -31,6 +31,7 @@ def allocate(
             and decision.provenance.role is Role.RISK_CONTROLLER
         ):
             raise constitution.violation(agent, f"{result.hypothesis} lacks risk approval")
+        constitution.require_published(agent, result, decision)
 
     limits = constitution.limits
     results = [r for r, _ in approved]

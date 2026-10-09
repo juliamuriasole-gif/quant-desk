@@ -39,6 +39,9 @@ def test_metrics():
     flat = pd.Series([0.0] * 5)
     assert sharpe(flat) == 0.0 and max_drawdown(flat) == 0.0
     assert max_drawdown(pd.Series([0.1, -0.5, 0.2])) == pytest.approx(0.5)
+    # losses from the first bar count: the starting capital is a peak
+    assert max_drawdown(pd.Series([-0.5, 0.0])) == pytest.approx(0.5)
+    assert max_drawdown(pd.Series([-0.1, -0.1, 0.3])) == pytest.approx(0.19)
 
 
 def test_grid_strategies_are_causal(market, researched):
@@ -56,6 +59,7 @@ def test_validator_catches_a_strategy_that_peeks_at_the_future(
     researcher = staff[Role.QUANT_RESEARCHER]
     hypotheses, results = researched
     cheat = research.Hypothesis(hypotheses[0].provenance, "peek()", "peek", (), "clairvoyance")
+    constitution.publish(cheat, researcher)
     result = research.run_backtest(researcher, constitution, cheat, market, 5.0)
     assert sharpe(result.returns) > 5  # looks spectacular...
     report = validate(
@@ -70,6 +74,7 @@ def test_validator_catches_misreported_returns(constitution, staff, market, rese
     import dataclasses
 
     inflated = dataclasses.replace(results[0], returns=results[0].returns + 0.001)
+    constitution.publish(inflated, staff[Role.QUANT_RESEARCHER])  # the researcher misreports
     report = validate(staff[Role.VALIDATOR], constitution, inflated, hypotheses[0], market, results)
     assert "FAIL: backtest reproduces from the hypothesis and data" in report.reasons
 
@@ -79,3 +84,4 @@ def test_deflated_sharpe_penalises_more_trials():
     returns = pd.Series(rng.normal(0.0005, 0.01, 1000))
     one, many = deflated_sharpe(returns, 1), deflated_sharpe(returns, 100)
     assert 0 < many < one < 1
+    assert deflated_sharpe(pd.Series([0.01, 0.02]), 8) == 0.0  # too short: never passes
